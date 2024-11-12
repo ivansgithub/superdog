@@ -1,17 +1,38 @@
-from flask import request, jsonify, Blueprint, render_template
+from flask import request, jsonify, Blueprint, render_template, flash, url_for,redirect
 from .extensions import db
 from .models import User, Space, Bid
 from . import socketio
 from datetime import datetime, timedelta
+from flask_login import login_user, logout_user, login_required, current_user, login_required
+from .models import User
+
 
 main = Blueprint('main', __name__)
+
 
 @socketio.on('bid')
 def handle_bid(data):
     user_id = data.get('user_id')
+    if not user_id:
+        socketio.emit('bid_error', {'error': 'Debes iniciar sesión para pujar.'})
+        return
+
+    # Recuperar el usuario de la base de datos
+    user = User.query.get(user_id)
+    if not user:
+        socketio.emit('bid_error', {'error': 'Usuario no válido.'})
+        return
+
+    # Ahora `user` representa al usuario autenticado
+    print(f"Usuario autenticado: {user.username}")
+
+   
+
+    user_id = data.get('user_id')
     space_id = data.get('space_id')
     amount = data.get('amount')
-    
+
+
     print(f"Recibida puja para espacio {space_id} con monto {amount} por usuario {user_id}")
 
     user = User.query.get(user_id)
@@ -44,11 +65,11 @@ def handle_bid(data):
         db.session.commit()
         
         # Emitir evento bid_update con los detalles actualizados
-        print(f"Emitiendo bid_update para espacio {space_id} con puja {amount} por usuario {user.name}")
+        print(f"Emitiendo bid_update para espacio {space_id} con puja {amount} por usuario {user.username}")
         socketio.emit('bid_update', {
             'space_id': space_id,
             'current_bid': amount,
-            'user_name': user.name
+            'user_name': user.username
         })
     else:
         # Emitir un mensaje de error si la puja no es válida
@@ -79,6 +100,7 @@ def get_users():
 
 @main.route('/auction')
 def auction():
+    
     return render_template('auction.html')
 
 from .models import Auction
@@ -107,32 +129,79 @@ def get_spaces_info():
     spaces_data = []
     spaces = Space.query.all()
     
-    # Definimos un número fijo de columnas (por ejemplo, 4) y calculamos las posiciones
     columns = 4  # Ajusta según tu cuadrícula real
     for index, space in enumerate(spaces):
-        # Convertimos el índice en etiquetas como A1, B1, etc.
-        row_label = chr(65 + (index // columns))  # Genera A, B, C, etc.
-        col_label = (index % columns) + 1         # Genera 1, 2, 3, 4, etc.
-        position = f"{row_label}{col_label}"      # Combina para obtener A1, B2, etc.
+        row_label = chr(65 + (index // columns))
+        col_label = (index % columns) + 1
+        position = f"{row_label}{col_label}"
 
-        # Obtener la subasta y la puja más alta asociada
         auction = Auction.query.filter_by(space_id=space.id).order_by(Auction.start_time.desc()).first()
         highest_bid = db.session.query(db.func.max(Bid.amount)).filter(Bid.auction_id == auction.id).scalar() if auction else 0.0
-        highest_bidder = db.session.query(User.name).join(Bid).filter(Bid.auction_id == auction.id, Bid.amount == highest_bid).scalar() if auction and highest_bid else None
+        highest_bidder = db.session.query(User.username).join(Bid).filter(Bid.auction_id == auction.id, Bid.amount == highest_bid).scalar() if auction and highest_bid else 'Ninguno'
 
         spaces_data.append({
             'space_id': space.id,
-            'position': position,  # Etiqueta única como A1, B2, etc.
+            'position': position,
             'size': space.size,
             'status': space.status,
             'current_bid': highest_bid or 0.0,
-            'highest_bidder': highest_bidder or 'Ninguno',
+            'highest_bidder': highest_bidder,
             'start_time': auction.start_time if auction else None,
             'end_time': auction.end_time if auction else None,
         })
 
+    
     return jsonify(spaces_data)
 
+
+
+@main.route('/register', methods=['GET', 'POST'])
+def register():
+    if request.method == 'POST':
+        username = request.form['username']
+        email = request.form['email']
+        password = request.form['password']
+
+        # Crear nuevo usuario
+        if User.query.filter_by(email=email).first() is None:
+            new_user = User(username=username, email=email)
+            new_user.set_password(password)  # Hash de la contraseña
+            db.session.add(new_user)
+            db.session.commit()
+            flash('Cuenta creada con éxito.')
+            return redirect(url_for('main.register'))
+        else:
+            flash('El correo electrónico ya está registrado.')
+    
+    return render_template('register.html')
+
+@main.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        email = request.form['email']
+        password = request.form['password']
+        user = User.query.filter_by(email=email).first()
+
+        if user and user.check_password(password):  # Verificación del hash
+            login_user(user)
+            flash('Sesión iniciada.')
+            return redirect(url_for('main.auction'))
+        else:
+            flash('Correo o contraseña incorrectos.')
+    
+    return render_template('login.html')
+
+@main.route('/logout')
+@login_required
+def logout():
+    logout_user()
+    flash('Sesión cerrada.')
+    return redirect(url_for('main.login'))
+
+@main.route('/profile')
+@login_required
+def profile():
+    return render_template('profile.html', user=current_user)
 
 
 

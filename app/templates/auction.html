@@ -7,22 +7,18 @@
     <script src="https://cdn.socket.io/4.0.1/socket.io.min.js"></script>
     <style>
         .main-container {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    width: 100%;           /* Asegura que use el ancho completo */
-    min-height: 700px;     /* Asegura altura suficiente para las filas */
-}
-
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            width: 100%;
+            min-height: 700px;
+        }
         .space-grid {
             display: grid;
-            grid-template-columns: repeat(4, 120px); /* Tamaño fijo para columnas */
-            grid-template-rows: repeat(5, 120px);    /* Tamaño fijo para filas */
+            grid-template-columns: repeat(4, 120px);
+            grid-template-rows: repeat(5, 120px);
             gap: 10px;
             margin: 20px 0;
-            min-height: 600px;
-            overflow: hidden; /* Ocultar filas adicionales */
-            max-height: calc(5 * 120px + 4 * 10px);
         }
         .space {
             background-color: #e0e0e0;
@@ -35,14 +31,14 @@
             border-radius: 5px;
             font-weight: bold;
             text-align: center;
-            width: 120px;  /* Tamaño fijo en ancho */
-            height: 120px; /* Tamaño fijo en alto */
-            padding: 0;    /* Eliminar padding para uniformidad */
-            box-sizing: border-box; /* Asegura que el padding no afecte el tamaño total */
+            width: 120px;
+            height: 120px;
+            padding: 0;
+            box-sizing: border-box;
         }
         .space p {
-            margin: 0;     /* Eliminar márgenes internos */
-            line-height: 1.2em; /* Ajuste para evitar que el texto desborde */
+            margin: 0;
+            line-height: 1.2em;
         }
         .space:hover {
             background-color: #d4d4d4;
@@ -64,12 +60,16 @@
         }
     </style>
     
+    <!-- Set userId based on login status using Jinja -->
+    <script>
+        const userId = {{ current_user.id if current_user.is_authenticated else "null" | tojson }};
+    </script>
 </head>
 <body>
     <div class="main-container">
         <h1>Subasta de Espacios</h1>
         <div class="space-grid" id="spaceGrid">
-            <!-- Espacios de la cuadrícula generados dinámicamente aquí -->
+            <!-- Espacios generados dinámicamente aquí -->
         </div>
 
         <!-- Panel de detalles del espacio seleccionado -->
@@ -77,22 +77,27 @@
             <p><strong>Espacio:</strong> <span id="spacePosition"></span></p>
             <p id="currentBid">Puja actual: €0</p>
             <p id="highestBidder">Pujador actual: Ninguno</p>
-            <input type="number" id="bidAmount" placeholder="Tu puja" step="0.01">
-            <button onclick="placeBid()">Hacer Puja</button>
+            {% if current_user.is_authenticated %}
+                <input type="number" id="bidAmount" placeholder="Tu puja" step="0.01">
+                <button onclick="placeBid()">Hacer Puja</button>
+            {% else %}
+                <p>Inicia sesión para pujar.</p>
+                <a href="{{ url_for('main.login') }}">Iniciar sesión</a>
+            {% endif %}
         </div>
     </div>
 
     <script>
-        const socket = io.connect('http://localhost:5010'); // Cambia el puerto si es necesario
+        const socket = io.connect('http://localhost:5011');
 
-        // Función para cargar la información inicial de los espacios
+        // Cargar la información inicial de los espacios
         async function loadSpaces() {
             try {
                 const response = await fetch('/get_spaces_info');
                 const spaces = await response.json();
 
                 const spaceGrid = document.getElementById('spaceGrid');
-                spaceGrid.innerHTML = '';  // Limpiar la cuadrícula antes de agregar espacios
+                spaceGrid.innerHTML = '';
 
                 spaces.forEach(space => {
                     const spaceDiv = document.createElement('div');
@@ -111,12 +116,12 @@
             }
         }
 
-        // Llamada para cargar espacios al inicio
+        // Llamada para cargar los espacios al inicio
         window.onload = loadSpaces;
 
         let selectedSpace = null;
 
-        // Función para mostrar los detalles del espacio seleccionado
+        // Mostrar los detalles del espacio seleccionado
         function selectSpace(space) {
             selectedSpace = space;
             document.getElementById('spacePosition').innerText = space.position;
@@ -128,10 +133,14 @@
         // Función para hacer una puja en el espacio seleccionado
         function placeBid() {
             const bidAmount = parseFloat(document.getElementById('bidAmount').value);
-            const userId = 1; // Reemplaza con el ID real del usuario logueado
 
             if (!selectedSpace || isNaN(bidAmount) || bidAmount <= 0) {
                 alert("Por favor, selecciona un espacio y un monto de puja válido.");
+                return;
+            }
+
+            if (userId === null || userId === "null") {
+                alert("Debes iniciar sesión para hacer una puja.");
                 return;
             }
 
@@ -168,9 +177,9 @@
             const spaceDiv = document.getElementById(`space-${space_id}`);
             if (spaceDiv) {
                 spaceDiv.innerHTML = `<p><strong>Reservado</strong></p><p>Usuario ${user_id}</p><p>€${final_bid}</p>`;
-                spaceDiv.style.backgroundColor = "#FFD700";  
-                spaceDiv.style.cursor = "default";  
-                spaceDiv.onclick = null;  
+                spaceDiv.style.backgroundColor = "#FFD700";
+                spaceDiv.style.cursor = "default";
+                spaceDiv.onclick = null;
             }
         });
 
@@ -181,8 +190,3 @@
     </script>
 </body>
 </html>
-
-
-
-
-
