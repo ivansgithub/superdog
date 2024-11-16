@@ -7,6 +7,7 @@ from .auction_tasks import check_auctions
 from .routes import main
 from flask_login import LoginManager
 from .models import User
+from .routes import auth_bp
 
 migrate = Migrate()
 scheduler = BackgroundScheduler()
@@ -17,16 +18,15 @@ def create_app():
     app.config.from_object(Config)
 
     app.register_blueprint(main)
+    app.register_blueprint(auth_bp, url_prefix='') 
 
     # Inicializar extensiones
     db.init_app(app)
     migrate.init_app(app, db)
     socketio.init_app(app)
     login_manager.init_app(app)  # Inicializar LoginManager con la app
-
-    # Configuración de la ruta de inicio de sesión para usuarios no autenticados
-    login_manager.login_view = 'main.login'  # Cambia 'main.login' a la ruta de login si es diferente
-
+    login_manager.login_view = 'main.login' 
+    login_manager.login_view = 'auth.login'
     # Función para cargar el usuario
     @login_manager.user_loader
     def load_user(user_id):
@@ -41,9 +41,11 @@ def create_app():
     @app.teardown_appcontext
     def shutdown_scheduler(exception=None):
         if scheduler.running:
-            scheduler.shutdown()
+            try:
+                scheduler.shutdown(wait=False)
+            except RuntimeError:
+                pass 
 
     return app
-
 
 

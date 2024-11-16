@@ -1,18 +1,121 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <title>Inicio de Sesión</title>
+    <meta charset="UTF-8"> <!-- Configura la codificación del documento -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"> <!-- Hace el diseño responsivo -->
+    <title>Iniciar Sesión</title> <!-- Título de la pestaña del navegador -->
+    <style>
+        /* Estilos para la página de inicio de sesión */
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f4f4f4;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 5px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            width: 300px;
+            text-align: center;
+        }
+        input {
+            width: 100%;
+            padding: 10px;
+            margin: 10px 0;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+        }
+        button {
+            background-color: #007BFF;
+            color: white;
+            padding: 10px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            width: 100%;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        p {
+            margin: 10px 0;
+        }
+        a {
+            color: #007BFF;
+            text-decoration: none;
+        }
+        a:hover {
+            text-decoration: underline;
+        }
+    </style>
 </head>
 <body>
-    <h2>Iniciar Sesión</h2>
-    <form method="POST" action="{{ url_for('main.login') }}">
-        <label>Email</label>
-        <input type="email" name="email" required>
-        
-        <label>Contraseña</label>
-        <input type="password" name="password" required>
-        
-        <button type="submit">Iniciar Sesión</button>
-    </form>
+    <!-- Contenedor del formulario de inicio de sesión -->
+    <div class="container">
+        <h1>Iniciar Sesión</h1>
+        <form id="loginForm">
+            <input type="text" id="username" name="username" placeholder="Nombre de usuario" required> <!-- Campo para el nombre de usuario -->
+            <input type="password" id="password" name="password" placeholder="Contraseña" required> <!-- Campo para la contraseña -->
+            <button type="button" onclick="login()">Iniciar Sesión</button> <!-- Botón para enviar el formulario -->
+        </form>
+        <p>¿No tienes cuenta? <a href="/register">Regístrate aquí</a></p>
+    </div>
+
+    <script>
+        // Función para manejar el inicio de sesión
+        function login() {
+    const username = document.getElementById("username").value;
+    const password = document.getElementById("password").value;
+
+    // Verificar que los campos no estén vacíos antes de enviar la solicitud
+    if (!username || !password) {
+        alert("Por favor, ingresa el nombre de usuario y la contraseña.");
+        return;
+    }
+
+    fetch('/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password })
+})
+.then(response => {
+    console.log('Estado de la respuesta:', response.status);
+    console.log('Encabezados de la respuesta:', response.headers);
+
+    if (!response.ok) {
+        // Mostrar detalles del error si la solicitud falla
+        return response.json().then(err => {
+            console.error('Detalles del error:', err);
+            throw new Error(err.error || `HTTP error! Status: ${response.status}`);
+        });
+    }
+
+    // Retornar el JSON si la respuesta es exitosa
+    return response.json();
+})
+.then(data => {
+    console.log('Datos devueltos por el backend:', data);
+    if (data.token) {
+        localStorage.setItem('authToken', data.token);
+        alert('Inicio de sesión exitoso');
+        window.location.href = '/auction';
+    } else {
+        alert(data.error || 'Error al iniciar sesión');
+    }
+})
+.catch(error => {
+    console.error('Error durante el inicio de sesión:', error);
+    alert(`Error en el inicio de sesión: ${error.message}`);
+});
+
+}
+
+    </script>
 </body>
 </html>

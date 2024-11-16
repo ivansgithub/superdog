@@ -1,135 +1,195 @@
-from flask import request, jsonify, Blueprint, render_template, flash, url_for,redirect
+from flask import request, jsonify, Blueprint, render_template, flash, url_for, redirect, current_app
 from .extensions import db
-from .models import User, Space, Bid
+from .models import User, Space, Bid, Auction
 from . import socketio
 from datetime import datetime, timedelta
-from flask_login import login_user, logout_user, login_required, current_user, login_required
-from .models import User
-
+from flask_login import login_user, logout_user, login_required, current_user
+import boto3
+from functools import wraps
+from .auth import get_public_key, token_required
+from jwt.exceptions import ExpiredSignatureError, InvalidTokenError
+import jwt
 
 main = Blueprint('main', __name__)
+auth_bp = Blueprint('auth', __name__)
 
+# ---- AUTENTICACIÓN ----
+
+@auth_bp.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'GET':
+        return render_template('login.html')
+
+    if request.method == 'POST':
+        try:
+            # Verifica y parsea los datos JSON correctamente
+            data = request.get_json(force=True)  # Asegura que siempre se procesa como JSON
+            if not data or 'username' not in data or 'password' not in data:
+                return jsonify({'error': 'Faltan campos requeridos: username y password'}), 400
+           
+            username = data['username']
+            password = data['password']
+
+            cognito_client = boto3.client('cognito-idp', region_name=current_app.config['AWS_COGNITO_REGION'])
+
+            response = cognito_client.initiate_auth(
+                ClientId=current_app.config['AWS_COGNITO_CLIENT_ID'],
+                AuthFlow='USER_PASSWORD_AUTH',
+                AuthParameters={
+                    'USERNAME': username,
+                    'PASSWORD': password,
+                }
+            )
+
+            token = response['AuthenticationResult']['AccessToken']
+            id_token = response['AuthenticationResult']['IdToken']
+
+            decoded_token = jwt.decode(id_token, options={"verify_signature": False})
+            cognito_id = decoded_token['sub']
+            username = decoded_token.get('cognito:username', username)
+
+            # Crear o actualizar el usuario en la base de datos
+            user = User.query.get(cognito_id)
+            if not user:
+                user = User(id=cognito_id, username=username)
+                db.session.add(user)
+            else:
+                user.username = username
+            db.session.commit()
+
+            return jsonify({'message': 'Inicio de sesión exitoso', 'token': token}), 200
+
+        except cognito_client.exceptions.NotAuthorizedException:
+            return jsonify({'error': 'Usuario o contraseña incorrectos'}), 401
+        except cognito_client.exceptions.UserNotFoundException:
+            return jsonify({'error': 'Usuario no encontrado'}), 404
+        except Exception as e:
+            return jsonify({'error': f'Error de autenticación: {str(e)}'}), 400
+
+
+
+
+@auth_bp.route('/register', methods=['GET', 'POST'])
+def register():
+    if request.method == 'POST':
+        data = request.json
+        username = data.get('username')
+        password = data.get('password')
+        email = data.get('email')
+
+        cognito_client = boto3.client('cognito-idp', region_name=current_app.config['AWS_COGNITO_REGION'])
+        
+        try:
+            cognito_client.sign_up(
+                ClientId=current_app.config['AWS_COGNITO_CLIENT_ID'],
+                Username=username,
+                Password=password,
+                UserAttributes=[{'Name': 'email', 'Value': email}]
+            )
+            return jsonify({'message': 'Registro exitoso. Revisa tu correo para confirmar la cuenta.'}), 201
+        except cognito_client.exceptions.UsernameExistsException:
+            return jsonify({'error': 'El nombre de usuario ya está registrado.'}), 409
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
+    return render_template('register.html')  # Renderizar formulario de registro en solicitudes GET
+
+
+
+@auth_bp.route('/confirm', methods=['POST'])
+def confirm_registration():
+    data = request.json
+    username = data.get('username')
+    code = data.get('code')
+
+    cognito_client = boto3.client('cognito-idp', region_name=current_app.config['AWS_COGNITO_REGION'])
+
+    try:
+        cognito_client.confirm_sign_up(
+            ClientId=current_app.config['AWS_COGNITO_CLIENT_ID'],
+            Username=username,
+            ConfirmationCode=code
+        )
+        return jsonify({'message': 'Cuenta confirmada exitosamente. Ahora puedes iniciar sesión.'}), 200
+    except cognito_client.exceptions.CodeMismatchException:
+        return jsonify({'error': 'Código de verificación incorrecto.'}), 400
+    except cognito_client.exceptions.ExpiredCodeException:
+        return jsonify({'error': 'El código de verificación ha expirado.'}), 400
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@auth_bp.route('/profile', methods=['GET'])
+@token_required
+def profile():
+    user_data = request.user
+    # Agregar esta línea
+    return jsonify({'user': {'id': user_data['sub'], 'username': user_data['username']}}), 200
+
+
+
+# ---- SUBASTAS ----
 
 @socketio.on('bid')
 def handle_bid(data):
-    user_id = data.get('user_id')
-    if not user_id:
-        socketio.emit('bid_error', {'error': 'Debes iniciar sesión para pujar.'})
-        return
-
-    # Recuperar el usuario de la base de datos
-    user = User.query.get(user_id)
-    if not user:
-        socketio.emit('bid_error', {'error': 'Usuario no válido.'})
-        return
-
-    # Ahora `user` representa al usuario autenticado
-    print(f"Usuario autenticado: {user.username}")
-
-   
-
-    user_id = data.get('user_id')
+    token = data.get('token')  # El cliente envía el token en cada puja
     space_id = data.get('space_id')
     amount = data.get('amount')
-
-
-    print(f"Recibida puja para espacio {space_id} con monto {amount} por usuario {user_id}")
-
-    user = User.query.get(user_id)
-    space = Space.query.get(space_id)
-
-    if not user or not space:
-        socketio.emit('bid_error', {'error': 'Usuario o espacio no encontrado.'}, to='/', include_self=True)
-        return
-
-    # Verificar que haya una subasta activa para el espacio
-    if not space.auctions:
-        socketio.emit('bid_error', {'error': 'No hay subasta activa para este espacio.'})
-        return
-
-    # Obtener el auction_id específico del espacio actual
-    auction_id = space.auctions[0].id
-    print(f"Auction ID para espacio {space_id}: {auction_id}")
-
-    # Obtener el highest_bid específico para esta subasta
-    highest_bid = db.session.query(db.func.max(Bid.amount)).filter(Bid.auction_id == auction_id).scalar() or 0.0
-    print(f"Calculando highest_bid para espacio {space_id} en subasta {auction_id}: Puja más alta actual es {highest_bid}")
-
-    # Verificar que la nueva puja sea mayor al highest_bid actual
-    if amount > highest_bid:
-        # Crear nueva puja y actualizar el estado del espacio
-        new_bid = Bid(amount=amount, user_id=user_id, auction_id=auction_id)
-        space.current_bid = amount  # Actualizar space.current_bid al nuevo valor de puja
-        space.status = "in auction"  # Cambiar el estado del espacio si está en subasta
-        db.session.add(new_bid)
-        db.session.commit()
-        
-        # Emitir evento bid_update con los detalles actualizados
-        print(f"Emitiendo bid_update para espacio {space_id} con puja {amount} por usuario {user.username}")
-        socketio.emit('bid_update', {
-            'space_id': space_id,
-            'current_bid': amount,
-            'user_name': user.username
-        })
-    else:
-        # Emitir un mensaje de error si la puja no es válida
-        socketio.emit('bid_error', {'error': 'La puja debe ser mayor que la actual.'})
-
-
-@socketio.on('connect')
-def handle_connect():
-    print("Client connected")
-
-@socketio.on('disconnect')
-def handle_disconnect():
-    print("Client disconnected")
-
-@main.route('/create_test_user')
-def create_test_user():
-    # Crear un usuario de prueba
-    test_user = User(name="Test User", email="testuser@example.com", password="password123")
-    db.session.add(test_user)
-    db.session.commit()
-    return jsonify({"message": "Usuario de prueba creado"})
-
-@main.route('/get_users')
-def get_users():
-    users = User.query.all()  # Consulta todos los usuarios
-    user_list = [{"id": user.id, "name": user.name, "email": user.email} for user in users]
-    return jsonify(user_list)
-
-@main.route('/auction')
-def auction():
     
-    return render_template('auction.html')
-
-from .models import Auction
-
-@main.route('/create_test_spaces')
-def create_test_spaces():
-    # Crear 16 espacios con una subasta activa para cada uno
-    for i in range(16):
-        test_space = Space(position_x=i % 4, position_y=i // 4, size="small", status="available")
-        db.session.add(test_space)
-        db.session.commit()
-        
-        # Crear una subasta para cada espacio
-        test_auction = Auction(
-            space_id=test_space.id,
-            start_time=datetime.utcnow(),
-            end_time=datetime.utcnow() + timedelta(minutes=10)
-        )
-        db.session.add(test_auction)
-        db.session.commit()
     
-    return jsonify({"message": "16 espacios y subastas de prueba creados"})
+
+    try:
+        # Decodificar el token y extraer el sub
+        decoded_token = jwt.decode(token, options={"verify_signature": False})  # Ajusta según tus necesidades
+        user_id = decoded_token['sub']
+
+        # Buscar al usuario en la base de datos
+        user = User.query.get(user_id)
+        if not user:
+            socketio.emit('bid_error', {'error': 'Usuario no encontrado en la base de datos.'})
+            return
+
+        # Buscar el espacio y la subasta activa
+        space = Space.query.get(space_id)
+        if not space:
+            socketio.emit('bid_error', {'error': 'Espacio no encontrado.'})
+            return
+
+        if not space.auctions:
+            socketio.emit('bid_error', {'error': 'No hay subasta activa para este espacio.'})
+            return
+
+        auction_id = space.auctions[0].id
+        highest_bid = db.session.query(db.func.max(Bid.amount)).filter(Bid.auction_id == auction_id).scalar() or 0.0
+
+        # Verificar la nueva puja
+        if amount > highest_bid:
+            # Crear una nueva puja
+            new_bid = Bid(amount=amount, user_id=user_id, auction_id=auction_id)
+            space.current_bid = amount
+            db.session.add(new_bid)
+            db.session.commit()
+
+            # Emitir la actualización de la puja
+            socketio.emit('bid_update', {
+                'space_id': space_id,
+                'current_bid': amount,
+                'user_name': user.username  # Usar el nombre del usuario
+            })
+        else:
+            socketio.emit('bid_error', {'error': 'La puja debe ser mayor a la actual.'})
+
+    except jwt.ExpiredSignatureError:
+        socketio.emit('bid_error', {'error': 'Token expirado. Inicia sesión nuevamente.'})
+    except jwt.InvalidTokenError:
+        socketio.emit('bid_error', {'error': 'Token inválido.'})
+
 
 @main.route('/get_spaces_info')
 def get_spaces_info():
     spaces_data = []
     spaces = Space.query.all()
-    
-    columns = 4  # Ajusta según tu cuadrícula real
+
+    columns = 4
     for index, space in enumerate(spaces):
         row_label = chr(65 + (index // columns))
         col_label = (index % columns) + 1
@@ -150,59 +210,36 @@ def get_spaces_info():
             'end_time': auction.end_time if auction else None,
         })
 
-    
-    return jsonify(spaces_data)
+    return jsonify(spaces_data), 200
 
 
+@main.route('/auction')
+def auction():
+    return render_template('auction.html')
 
-@main.route('/register', methods=['GET', 'POST'])
-def register():
-    if request.method == 'POST':
-        username = request.form['username']
-        email = request.form['email']
-        password = request.form['password']
 
-        # Crear nuevo usuario
-        if User.query.filter_by(email=email).first() is None:
-            new_user = User(username=username, email=email)
-            new_user.set_password(password)  # Hash de la contraseña
-            db.session.add(new_user)
-            db.session.commit()
-            flash('Cuenta creada con éxito.')
-            return redirect(url_for('main.register'))
-        else:
-            flash('El correo electrónico ya está registrado.')
-    
-    return render_template('register.html')
+@main.route('/create_test_spaces')
+def create_test_spaces():
+    for i in range(16):
+        space = Space(position_x=i % 4, position_y=i // 4, size="small", status="available")
+        db.session.add(space)
+        db.session.commit()
 
-@main.route('/login', methods=['GET', 'POST'])
-def login():
-    if request.method == 'POST':
-        email = request.form['email']
-        password = request.form['password']
-        user = User.query.filter_by(email=email).first()
+        auction = Auction(
+            space_id=space.id,
+            start_time=datetime.utcnow(),
+            end_time=datetime.utcnow() + timedelta(minutes=10)
+        )
+        db.session.add(auction)
+        db.session.commit()
+    return jsonify({'message': 'Espacios y subastas creados.'}), 201
 
-        if user and user.check_password(password):  # Verificación del hash
-            login_user(user)
-            flash('Sesión iniciada.')
-            return redirect(url_for('main.auction'))
-        else:
-            flash('Correo o contraseña incorrectos.')
-    
-    return render_template('login.html')
+
+# ---- SESIONES ----
 
 @main.route('/logout')
 @login_required
 def logout():
     logout_user()
     flash('Sesión cerrada.')
-    return redirect(url_for('main.login'))
-
-@main.route('/profile')
-@login_required
-def profile():
-    return render_template('profile.html', user=current_user)
-
-
-
-
+    return redirect(url_for('auth.login'))

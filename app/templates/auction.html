@@ -3,69 +3,105 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Subasta de Espacios en Tiempo Real</title>
+    <title>Subasta de Espacios</title>
     <script src="https://cdn.socket.io/4.0.1/socket.io.min.js"></script>
     <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f4f4f4;
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+        }
+
+        .navbar {
+            background-color: #007BFF;
+            color: white;
+            padding: 10px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .navbar .username {
+            font-weight: bold;
+        }
+
+        .navbar button {
+            background: white;
+            color: #007BFF;
+            border: none;
+            padding: 5px 10px;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        .navbar button:hover {
+            background: #0056b3;
+            color: white;
+        }
+
         .main-container {
             display: flex;
             flex-direction: column;
             align-items: center;
-            width: 100%;
-            min-height: 700px;
+            padding: 20px;
+            flex: 1;
         }
+
         .space-grid {
             display: grid;
             grid-template-columns: repeat(4, 120px);
-            grid-template-rows: repeat(5, 120px);
             gap: 10px;
             margin: 20px 0;
         }
+
         .space {
             background-color: #e0e0e0;
             display: flex;
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            cursor: pointer;
             border: 2px solid #444;
             border-radius: 5px;
             font-weight: bold;
             text-align: center;
             width: 120px;
             height: 120px;
-            padding: 0;
-            box-sizing: border-box;
         }
-        .space p {
-            margin: 0;
-            line-height: 1.2em;
-        }
+
         .space:hover {
             background-color: #d4d4d4;
+            cursor: pointer;
         }
+
         .detail-panel {
             border: 2px solid #444;
             padding: 15px;
-            width: 250px;
+            width: 300px;
             border-radius: 8px;
             text-align: center;
             background-color: #f9f9f9;
             display: none;
         }
+
         .detail-panel.active {
             display: block;
         }
-        .detail-panel p, .detail-panel input, .detail-panel button {
+
+        .detail-panel input, .detail-panel button {
             margin: 10px 0;
         }
     </style>
-    
-    <!-- Set userId based on login status using Jinja -->
-    <script>
-        const userId = {{ current_user.id if current_user.is_authenticated else "null" | tojson }};
-    </script>
 </head>
 <body>
+    <div class="navbar">
+        <span class="username" id="username">Cargando...</span>
+        <button onclick="logout()">Cerrar Sesión</button>
+    </div>
+
     <div class="main-container">
         <h1>Subasta de Espacios</h1>
         <div class="space-grid" id="spaceGrid">
@@ -77,25 +113,47 @@
             <p><strong>Espacio:</strong> <span id="spacePosition"></span></p>
             <p id="currentBid">Puja actual: €0</p>
             <p id="highestBidder">Pujador actual: Ninguno</p>
-            {% if current_user.is_authenticated %}
-                <input type="number" id="bidAmount" placeholder="Tu puja" step="0.01">
-                <button onclick="placeBid()">Hacer Puja</button>
-            {% else %}
-                <p>Inicia sesión para pujar.</p>
-                <a href="{{ url_for('main.login') }}">Iniciar sesión</a>
-            {% endif %}
+            <input type="number" id="bidAmount" placeholder="Tu puja" step="0.01">
+            <button onclick="placeBid()">Hacer Puja</button>
         </div>
     </div>
 
     <script>
         const socket = io.connect('http://localhost:5011');
+        let userId = null;
 
-        // Cargar la información inicial de los espacios
+        // Cargar el perfil del usuario al iniciar
+        async function loadUserProfile() {
+            const token = localStorage.getItem('authToken');
+            if (!token) {
+                alert('Debes iniciar sesión para acceder.');
+                window.location.href = '/login';
+                return;
+            }
+
+            try {
+                const response = await fetch('/profile', {
+                    method: 'GET',
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                if (!response.ok) {
+                    throw new Error('Error al cargar el perfil.');
+                }
+                const data = await response.json();
+                document.getElementById('username').innerText = `Bienvenido, ${data.user.username || 'Usuario'}`;
+                userId = data.user.id;
+            } catch (error) {
+                console.error('Error al cargar el perfil:', error);
+                localStorage.removeItem('authToken');
+                window.location.href = '/login';
+            }
+        }
+
+        // Cargar los espacios de la subasta
         async function loadSpaces() {
             try {
                 const response = await fetch('/get_spaces_info');
                 const spaces = await response.json();
-
                 const spaceGrid = document.getElementById('spaceGrid');
                 spaceGrid.innerHTML = '';
 
@@ -116,12 +174,9 @@
             }
         }
 
-        // Llamada para cargar los espacios al inicio
-        window.onload = loadSpaces;
-
         let selectedSpace = null;
 
-        // Mostrar los detalles del espacio seleccionado
+        // Seleccionar espacio y mostrar detalles
         function selectSpace(space) {
             selectedSpace = space;
             document.getElementById('spacePosition').innerText = space.position;
@@ -130,31 +185,32 @@
             document.getElementById('detailPanel').classList.add('active');
         }
 
-        // Función para hacer una puja en el espacio seleccionado
+        // Enviar puja
         function placeBid() {
+            const token = localStorage.getItem('authToken');
             const bidAmount = parseFloat(document.getElementById('bidAmount').value);
 
             if (!selectedSpace || isNaN(bidAmount) || bidAmount <= 0) {
-                alert("Por favor, selecciona un espacio y un monto de puja válido.");
+                alert("Selecciona un espacio y una cantidad válida.");
                 return;
             }
 
-            if (userId === null || userId === "null") {
-                alert("Debes iniciar sesión para hacer una puja.");
+            if (!token) {
+                alert("Debes iniciar sesión para pujar.");
+                window.location.href = '/login';
                 return;
             }
 
             socket.emit('bid', {
-                user_id: userId,
+                token: token,
                 space_id: selectedSpace.space_id,
                 amount: bidAmount
             });
         }
 
-        // Escuchar actualizaciones de puja en tiempo real
+        // Manejo de eventos de Socket.IO
         socket.on('bid_update', function(data) {
             const { space_id, current_bid, user_name } = data;
-
             const bidElement = document.getElementById(`space-${space_id}`);
             if (bidElement) {
                 bidElement.innerHTML = `
@@ -170,23 +226,22 @@
             }
         });
 
-        // Escuchar evento de espacio reservado
-        socket.on('space_reserved', function(data) {
-            const { space_id, user_id, final_bid } = data;
-
-            const spaceDiv = document.getElementById(`space-${space_id}`);
-            if (spaceDiv) {
-                spaceDiv.innerHTML = `<p><strong>Reservado</strong></p><p>Usuario ${user_id}</p><p>€${final_bid}</p>`;
-                spaceDiv.style.backgroundColor = "#FFD700";
-                spaceDiv.style.cursor = "default";
-                spaceDiv.onclick = null;
-            }
-        });
-
-        // Manejar errores de puja
         socket.on('bid_error', function(data) {
             alert(data.error);
         });
+
+        // Cerrar sesión
+        function logout() {
+            localStorage.removeItem('authToken');
+            alert('Has cerrado sesión.');
+            window.location.href = '/login';
+        }
+
+        // Inicialización
+        window.onload = async () => {
+            await loadUserProfile();
+            await loadSpaces();
+        };
     </script>
 </body>
 </html>
